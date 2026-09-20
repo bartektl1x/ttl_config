@@ -1,3 +1,10 @@
+---
+name: ai-engineering-anti-overengineering
+description: >
+  Review and design guidance for keeping AI-assisted production code simple,
+  explicit, contract-driven, and free of accidental overengineering.
+---
+
 # AI Engineering Anti-Overengineering Skill
 
 Use these instructions when designing, reviewing, or refactoring production software with an AI assistant.
