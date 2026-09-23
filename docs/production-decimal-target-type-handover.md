@@ -104,7 +104,7 @@ target_type_str = (
 
 Ensure `TargetType` is imported there. `str(TargetType.STRING)` can produce `"TargetType.STRING"` with ordinary `Enum`, which would break existing column types. `.value` explicitly preserves the original lookup key regardless of whether the enum subclasses `str` or uses `StrEnum`.
 
-Keep or restore the original `"decimal": DecimalType()` entry in `_SPARK_TYPE_MAPPING`; it gives bare decimal the existing `(10, 0)` behavior. At the beginning of `_resolve_spark_type`, add this branch, then leave its existing mapping lookup and unsupported-type error unchanged:
+Keep the `"decimal": DecimalType(10, 0)` entry in `_TARGET_TYPE_TO_SPARK_TYPE`; it gives bare decimal the established `(10, 0)` behavior. At the beginning of `_resolve_spark_type`, add this branch, then leave its existing mapping lookup and unsupported-type error unchanged:
 
 ```python
 if target_type_str.startswith("decimal") and target_type_str != "decimal":
