@@ -4,7 +4,7 @@
 
     Excel worksheet
         -> explicit RetentionRule models
-        -> optional current successful column-lineage inheritance
+        -> optional inheritance (disabled by default)
         -> Unity Catalog target validation
         -> authoritative Delta snapshot
 
@@ -22,7 +22,14 @@ The workbook reader rejects missing, unexpected, or duplicate columns; empty wor
 
 ## Inheritance
 
-Inheritance starts from explicit rules and follows direct top-level column mappings exposed by system.access.column_lineage.
+The currently wired resolver starts from explicit rules and follows direct
+top-level column mappings exposed by `system.access.column_lineage`. The
+generator defaults to `include_inheritance=False`; production should leave it
+disabled for the streaming workload because its column mappings are unreliable.
+`inheritance_v2/` is an isolated table-lineage alternative and is not wired
+into the packaged generator. See
+[`inheritance_v2/PRODUCTION_PART_2_REVIEW.md`](../inheritance_v2/PRODUCTION_PART_2_REVIEW.md)
+for the deployment gates and Part 2 plan.
 
 Only mappings associated with the latest completed REFRESH or FULL_REFRESH update of each pipeline are considered. A rule is inherited only when the target receives one effective policy. Explicit rules always win.
 
@@ -49,6 +56,6 @@ The validator checks configured tables using Unity Catalog information schema me
 
 The generator writes a complete, unpartitioned managed Delta snapshot to:
 
-    <ops_catalog>.retention.retention_config
+    <ops_catalog>.retention.ttl_config
 
 When the destination already exists, its type, format, partitioning, and exact schema are validated before overwrite. The generated snapshot is authoritative: omitted rules are removed from the configuration table.

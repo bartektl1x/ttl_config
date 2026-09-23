@@ -1,5 +1,12 @@
 # Production handover prompt: port table-lineage inheritance v2
 
+**Start with [`PRODUCTION_PART_2_REVIEW.md`](PRODUCTION_PART_2_REVIEW.md).**
+Its verified findings and deployment gates supplement this implementation
+prompt. Part 1 already uses explicit rules with inheritance disabled; do not
+change its production behavior until Part 2 passes those gates. This repository
+is a design POC, not a checkout of the production PR. Inspect production HEAD
+and its diff against Part 1 before making any change.
+
 You are taking the isolated POC in `inheritance_v2/` into **our actual
 production retention repository**. Act as a Principal Data Platform Engineer.
 Deliver a small, reviewed implementation on the production branch, with
@@ -25,6 +32,11 @@ own engineering skills, conventions, and interfaces before using this POC.
    and this handover for business intent. Resolve differences against the real
    production code and actual Databricks observations. Do not overwrite
    production improvements by copying this file wholesale.
+5. Check the production generator's default and every invocation. An old
+   column-lineage resolver must not be reachable in production while Part 1
+   deliberately disables inheritance. Part 2 should replace that resolver
+   before any caller opts in; keep the default disabled unless the product
+   explicitly decides otherwise.
 
 ## Mandatory live pre-flight: VIEW bridge
 
@@ -48,6 +60,10 @@ false` view expansion or from unrelated read/write events.
 If the two edges cannot be verified reliably, **stop before production
 changes**. Show the observed rows or exact access/error evidence and do not
 invent a fallback. The POC's local Spark tests do not satisfy this gate.
+Run this check as the production job's service principal. Verify whether
+partial/selective updates are used and whether a temporary lineage failure may
+remove previously inherited rows from the authoritative snapshot. See the
+read-only SQL and decisions in `PRODUCTION_PART_2_REVIEW.md`.
 
 ## What changed in the isolated POC
 
@@ -103,6 +119,10 @@ and reachable Spark collections have one `max_mappings` safety budget.
   sufficient. Missing lineage means no derived rule. False-negative
   inheritance is preferable to false-positive retention. No cycle recovery,
   historical reconciliation, generic graph framework, or dual lineage path.
+- Retaining the same name and physical type does not prove the downstream
+  column has the same time semantics. Confirm that invariant for the actual
+  supported transformations. If it is not guaranteed, leave that target
+  explicit; do not add mapping guesses to the resolver.
 
 ## Algorithm to adapt to the production branch
 

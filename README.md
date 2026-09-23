@@ -9,11 +9,15 @@ This repository contains the first consolidated version of the retention configu
 The library:
 
 1. reads explicit retention rules from a product-owned Excel worksheet,
-2. optionally inherits rules through current successful Lakeflow column lineage,
+2. optionally inherits rules through the legacy Lakeflow column-lineage resolver,
 3. validates target tables and time columns against Unity Catalog,
 4. writes an authoritative Delta snapshot of the effective configuration.
 
-Explicit rules remain authoritative. Lineage inheritance is optional enrichment: ambiguous or unavailable lineage produces no derived rule.
+Explicit rules remain authoritative. Inheritance defaults to disabled. The
+legacy resolver is still callable when explicitly enabled, but its column-lineage
+assumption does not hold for the target streaming workload. Keep inheritance
+disabled in production until the table-lineage design in `inheritance_v2/` is
+verified and ported. See [the Part 2 review and plan](inheritance_v2/PRODUCTION_PART_2_REVIEW.md).
 
 ## Repository layout
 
@@ -37,17 +41,16 @@ Explicit rules remain authoritative. Lineage inheritance is optional enrichment:
 
     generator = RetentionConfigGenerator(spark)
 
-    rules = generator.generate_retention_config(
+    rules = generator.generate_ttl_config(
         workbook_path="/Volumes/ops/config/retention.xlsx",
         sheet_name="retention_rules",
-        include_inheritance=True,
     )
 
-    generator.write_retention_config(rules)
+    generator.write_ttl_config(rules)
 
 The generated destination is read from the Spark configuration key ops_catalog and is written to:
 
-    <ops_catalog>.retention.retention_config
+    <ops_catalog>.retention.ttl_config
 
 ## Deliberate boundaries
 

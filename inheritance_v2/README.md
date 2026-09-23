@@ -35,3 +35,5 @@ that a real Lakeflow update emits both direct edges of a
 `STREAMING_TABLE -> VIEW -> STREAMING_TABLE` chain. That pre-flight is mandatory
 before this design is implemented in a production repository. See
 [`PORT_TO_PRODUCTION.md`](PORT_TO_PRODUCTION.md) for the exact porting task.
+Read [`PRODUCTION_PART_2_REVIEW.md`](PRODUCTION_PART_2_REVIEW.md) first for
+review findings, deployment gates, and the split between Part 1 and Part 2.
