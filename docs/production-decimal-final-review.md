@@ -40,7 +40,11 @@ Confirm the following with existing tests; add only missing representative cases
 | `decimal(0,0)`, `decimal(39,0)`, `decimal(10,11)` | Validation error |
 | bare `decimal` | Existing enum and `DecimalType(10, 0)` |
 
-## 3. Clean up the changed tests, especially comments
+## 3. Check the `TargetType | str` contract
+
+Keep `target_column_data_type: TargetType | str` for this focused change. The annotation describes the **stored** values; it does not grant arbitrary strings to valid configurations. The `mode="before"` validator must turn known plain types and bare `decimal` into `TargetType`, turn only valid `decimal(p,s)` into a canonical string, and reject every other string. Confirm those three paths in tests, including `"uuid"` and `model_dump(mode="json")` for both representations. Search for `model_copy(update=...)`, `model_construct`, or direct assignment of this field: these can bypass creation-time validation and must not inject unvalidated strings. Do not change the public field into a dataclass merely to narrow the annotation during final polish; that changes consumers and the default serialized shape of parameterized decimals. If multiple consumers genuinely need structured precision/scale instead of the canonical string, flag a separate typed-value design with an explicit serialization contract.
+
+## 4. Clean up the changed tests, especially comments
 
 Review all tests touched by this feature, including `test_config_unit.py`, `test_config_loader_unit.py`, and `test_data_vault_pipeline_unit.py`. For new or changed tests with separate setup/action/assertion phases, use exactly the surrounding lowercase, standalone `# given`, `# when`, `# then` markers in that order. Don't use `# then - ...` or other improvised headings. Each comment must accurately describe the following step. In `test_decimal_with_custom_precision_and_scale`, remove or correct `# then - nondecimal enum, explicit decimal, bare decimal`: the three `_mock_column` inputs are **strings** (`decimal(14,2)`, `decimal(7,4)`, `decimal`), all decimal types, so that claim is false. Replace the YAML test's `# then - quoted YAML decimal reaches ColumnConfig as canonical string` with a plain `# then` above the assertions. For concise single-assertion tests, introduce local variables to make `when` and `then` clear where useful; do not invent dummy setup solely to place a `# given` comment. Keep fixtures/parameterization meaningful, and do not rewrite unrelated existing tests.
 
