@@ -1,146 +1,171 @@
-# Production handover: parameterized decimal target types
+# Fresh-session prompt: finish decimal target type support
 
-## Task and scope
+You are working in the **production `shared_lib` repository**, not in this
+`ttl_config` repository. Implement the change and review the entire local diff
+before finishing. The change was originally shown in screenshots, which do
+not expose every line or call site. Inspect actual source files and run tests;
+do not treat screenshot observations as proof of behavior.
 
-Review and repair the proposed production diff for `target_column_data_type`.
-The source diff was supplied in two screenshot sets. The second set adds regex
-validation, bounds checks, canonicalization, and more tests; it supersedes
-some of the findings from the first set. The screenshots cover these paths:
+Follow the production repo's own instructions. The style references are
+[principal review](https://github.com/bartektl1x/ttl_config/blob/main/skills/repo-principal-review/SKILL.md)
+and [anti-overengineering](https://github.com/bartektl1x/ttl_config/blob/main/skills/ai-engineering-anti-overengineering/SKILL.md).
+The applicable rules are stated here too: a small, explicit implementation,
+one validation owner, and meaningful tests. Do not
+add a general SQL type parser, type hierarchy, new YAML fields, or unrelated
+refactoring for this feature.
+
+## The precise user contract
+
+The YAML field is `target_column_data_type` on `ColumnConfig`:
+
+| YAML value | Required result |
+| --- | --- |
+| `decimal` | The established behavior: enum `TargetType.DECIMAL` and Spark `DecimalType(10,0)` |
+| `"decimal(10, 4)"` | Spark `DecimalType(10,4)`; model stores canonical `decimal(10,4)` |
+| `" DECIMAL ( 10 , 4 ) "` | The same canonical value and Spark type |
+| Existing nondecimal values | Same enum representation and Spark types as before this feature |
+
+For an explicit decimal, `p` is total digits (1 through 38), and `s` is
+fractional digits (0 through `p`). Reject invalid syntax or bounds **when
+constructing `ColumnConfig`**. This feature supports `decimal` and
+`decimal(p,s)` only; do not silently extend it to `decimal(p)`, `numeric`,
+`DEC`, negative scale, or generic Spark DDL. Bare `decimal` means the existing
+default; it does not preserve precision/scale from an input CSV string.
+
+Quote `"decimal(10, 4)"` in YAML documentation: unquoted text with a comma is
+ambiguous inside a flow-style YAML mapping.
+
+Official reference for the numeric bounds and Spark's bare-decimal default:
+https://docs.databricks.com/aws/en/sql/language-manual/data-types/decimal-type
+
+## Step 1: inspect the actual production state
+
+Before changing code, run `git status --short` and review the complete current
+`git diff` (or the feature branch/PR diff if the changes are committed).
+Inspect at least these files:
 
 - `src/shared_lib/layers/shared/config.py`
 - `src/shared_lib/layers/silver/data_vault_entity.py`
 - `src/shared_lib/pipelines/data_vault_pipeline.py`
-- `tests/test_utils/factories/builders/column_config_builder.py`
 - `tests/unit_tests/shared_lib/layers/shared/test_config_unit.py`
 - `tests/unit_tests/shared_lib/pipelines/test_data_vault_pipeline_unit.py`
 
-This handover lives in `ttl_config` for the production agent. The feature belongs
-to the separate `shared_lib` production repository; do not add decimal logic to
-the retention package. Read the production files and the full local git diff
-before editing: screenshots show changed fragments, not every consumer.
+Use `rg` to find `class TargetType`, `_DECIMAL_RE`,
+`target_column_data_type`, `_resolve_spark_type`, and every consumer of the
+field. Check `TargetType`'s actual base class and `__str__` behavior. Identify
+whether the current regex is equivalent to the grammar in Step 2. Preserve
+any unrelated work already in the working tree.
 
-Follow the repository's `skills/repo-principal-review/SKILL.md` and
-`skills/ai-engineering-anti-overengineering/SKILL.md`: establish the contract,
-give each validation one owner, preserve existing behavior, and keep the code
-small and readable from top to bottom.
+The latest screenshots show `ColumnConfig` using
+`_DECIMAL_RE.fullmatch(v_lower)`, checking both numeric bounds, and returning
+`decimal(p,s)`. They do **not** show the `_DECIMAL_RE` declaration. They also
+show the pipeline still using `str(column.target_column_data_type).lower()`;
+that call deserves a concrete fix even if `TargetType` happens to be
+`StrEnum`. No test result was supplied.
 
-## Required behavior
+## Step 2: finish the Pydantic validation boundary
 
-1. Existing YAML `target_column_data_type: decimal` continues to resolve to
-   `DecimalType(10, 0)`, as the previous Spark type mapping did. Do not interpret
-   bare `decimal` as retaining the input column's precision and scale.
-2. YAML `target_column_data_type: "decimal(10, 4)"` resolves to
-   `DecimalType(10, 4)`. Accept case differences and inconsequential spaces,
-   including `DECIMAL ( 10 , 4 )`, then store one canonical spelling such as
-   `decimal(10,4)`. The same numeric type must not acquire different serialized
-   configurations because of formatting.
-3. Precision is 1 through 38; scale is 0 through precision. Reject malformed
-   strings and out-of-range pairs *when validating the configuration*, with a
-   useful error identifying the column. Examples: `decimal()`,
-   `decimal(abc,2)`, `decimal(0,0)`, `decimal(39,0)`, `decimal(10,11)`,
-   `decimal(10,-1)`, `decimal(10,4,2)`, and trailing content.
-4. The requested contract has two forms, `decimal` and `decimal(p,s)`. Do not
-   silently add `decimal(p)`, `numeric(p,s)`, or other SQL syntax unless the
-   production code already supports it as part of its public contract.
-5. All previously supported nondecimal types retain their behavior, including
-   their `TargetType` enum representation where callers already rely on it.
-6. Quote the example in documentation. In an inline YAML mapping, the comma in
-   an unquoted `decimal(10, 4)` can be parsed as a YAML separator.
+Retain the current field validator on `target_column_data_type`. Its
+`mode="before"` is sensible because input can be either an enum member or a
+YAML string. Keep existing enum members unchanged. Convert recognized plain
+strings to their existing `TargetType` members. For a parameterized decimal:
 
-Databricks decimal rules:
-https://docs.databricks.com/aws/en/sql/language-manual/data-types/decimal-type
+1. Strip outer whitespace and lowercase the type name.
+2. Require **one complete match** of a small decimal pattern with exactly two
+   ASCII integer captures. Allow horizontal whitespace between `decimal` and
+   `(`, and around the numbers, comma, and closing `)`.
+3. Convert both captures to integers. Require `1 <= p <= 38` and
+   `0 <= s <= p`. Raise `ValueError` at config validation for failures.
+4. Return `f"decimal({p},{s})"`; do not preserve user spacing/case.
 
-Spark 3.5 Python source (its `DecimalType` constructor merely assigns `precision`
-and `scale`; it does not validate the bounds):
+If the existing `_DECIMAL_RE` already has this behavior, keep it. Otherwise,
+the intended shape is:
+
+```python
+_DECIMAL_RE = re.compile(
+    r"decimal[ \t]*\([ \t]*([0-9]+)[ \t]*,[ \t]*([0-9]+)[ \t]*\)"
+)
+```
+
+The validator uses `_DECIMAL_RE.fullmatch(normalized_value)`. There is no
+need for `^...$` with `fullmatch`, no need for `re.IGNORECASE` after lowercasing,
+and no need for a general DDL parser. The bounds checks are required:
+PySpark 3.5's Python `DecimalType` constructor only assigns `precision` and
+`scale`; it does not reject an invalid pair on construction:
 https://spark.apache.org/docs/3.5.6/api/python/_modules/pyspark/sql/types.html
 
-## Current review of the second screenshot set
+## Step 3: make the schema builder safe for both field variants
 
-The revised `ColumnConfig` validator uses `_DECIMAL_RE.fullmatch(...)`,
-checks both numeric bounds, and returns canonical `decimal(p,s)`. This is the
-right narrow use of `re` and resolves the initial weak validation and
-formatting findings *if* `_DECIMAL_RE` itself matches exactly the intended
-grammar. Its declaration is outside the supplied screenshots: inspect the
-actual pattern, verify optional spaces and two captures, and run the new
-negative tests. Do not claim the regex is correct without seeing it.
+In `_build_schema_from_config` (or its current equivalent), convert the
+validated field to a type name explicitly:
 
-The revised tests now include normalized spellings and a schema test that
-asserts a nondecimal enum maps to `LongType`. This improves coverage, but the
-visible schema test still uses `_mock_column` and `MagicMock` rather than a
-real `ColumnConfig`. Its execution result is not shown. The production agent
-must still inspect `TargetType` and run a real-model regression test.
+```python
+configured_type = column.target_column_data_type
+target_type_str = (
+    configured_type.value
+    if isinstance(configured_type, TargetType)
+    else configured_type
+).lower()
+```
 
-### Remaining blocker: `str(TargetType)`
+Do **not** use `str(configured_type).lower()`. For a conventional `Enum`,
+including `class TargetType(str, Enum)`, `str(TargetType.BIGINT)` may be
+`"TargetType.BIGINT"` rather than `"bigint"`. Explicit `.value` also states
+the intended contract if the current class is `StrEnum`. Keep the existing
+nondecimal mapping and the existing bare-decimal result `DecimalType(10,0)`.
 
-`data_vault_pipeline.py` still changes `.value.lower()` to
-`str(column.target_column_data_type).lower()`. For ordinary `Enum` and
-`class TargetType(str, Enum)`, `str(TargetType.STRING)` is
-`"TargetType.STRING"`, not `"string"`; the mapping then rejects existing
-columns. This concern does not apply if `TargetType` is genuinely `StrEnum` or
-overrides `__str__` appropriately. Inspect its declaration and run a
-real `ColumnConfig` -> schema-builder test. If it is an ordinary enum, use
-`.value` for enum members and the canonical string for explicit decimals.
+For a canonical `decimal(p,s)`, construct `DecimalType(p,s)`. The current
+`removeprefix(...).removesuffix(...).split(",")` extraction is acceptable if
+only called on validated `ColumnConfig` values; do not add a new representation
+class merely to avoid this small extraction. If `_resolve_spark_type` is also
+an independent API accepting arbitrary strings, keep its existing contextual
+`SchemaBuilderError` behavior, but do not implement a second, conflicting
+decimal grammar or repeat all Pydantic validation in the schema builder.
 
-### Remaining audit: mixed enum/string consumers
+## Step 4: audit the other consumers of `TargetType | str`
 
-The field is still `TargetType | str`. Search all reads of
-`target_column_data_type`, especially `.value`, `.name`, enum comparisons,
-casts, serialization, and mapping lookups. The screenshots update one
-`data_vault_entity.py` call site but cannot prove complete coverage. Do not
-introduce a new abstraction unless the call-site audit shows a concrete need.
+Search every read of `target_column_data_type`. Check `.value`, `.name`,
+`TargetType(...)`, enum comparisons, casting, metadata creation, and
+serialization. The screenshot changes one use in `data_vault_entity.py` from
+`TargetType(field)` to the validated field directly; verify the rest of that
+method and all other consumers. Change only actual incompatible call sites.
+Keep ordinary types as enum members and explicit decimals as canonical
+strings unless a demonstrated call site forces a better local representation.
 
-### Minor cleanup: schema builder parses validated text a second time
+## Step 5: run meaningful regression checks
 
-The schema builder still extracts precision and scale with
-`removeprefix(...).removesuffix(...).split(",")` and catches parse errors.
-After the Pydantic validator guarantees a canonical string, this should be
-evaluated against the builder's actual public contract. Either reuse the one
-small parser, or consume its canonical output directly. Avoid independently
-maintaining a second, broader decimal grammar or revalidating constraints
-already guaranteed by `ColumnConfig`.
+Use existing fixtures and project test conventions. Test the real behavior,
+not just the enum-free `_resolve_spark_type` helper or `DecimalType` objects:
 
-## Implementation direction
+1. `ColumnConfig`: enum input and bare string input remain enum members;
+   `decimal(10,4)`, `DECIMAL(10, 4)`, and `decimal ( 10 , 4 )` all store the
+   identical canonical `decimal(10,4)` string.
+2. `ColumnConfig`: reject `decimal()`, `decimal(abc,2)`, `decimal(10)`,
+   `decimal(0,0)`, `decimal(39,0)`, `decimal(10,11)`, `decimal(10,-1)`,
+   `decimal(10,4,2)`, and trailing junk. Verify each fails before Spark
+   schema construction. Retain existing rejection of unsupported types.
+3. Build a schema from a **real validated `ColumnConfig`**, not only a
+   `MagicMock`: include `TargetType.BIGINT` (expect `LongType()`), bare
+   `TargetType.DECIMAL` or bare string (expect `DecimalType(10,0)`), and
+   `decimal(10,4)` (expect `DecimalType(10,4)`). This catches the
+   `str(enum)` regression. The mock-only test in the screenshots does not
+   exercise Pydantic's mixed field representation.
+4. If the entity transformation reads this field, cover its explicit-decimal
+   path and its existing date/timestamp handling without changing cast
+   semantics.
 
-- Keep Pydantic as the owner of the YAML/type contract. Because the current
-  model accepts both `TargetType` instances and strings, a `mode="before"`
-  field validator is reasonable; do not replace it solely for stylistic
-  reasons. Use a small pure decimal parser called from that validator, not a
-  generic Spark SQL type parser or a new hierarchy of type classes.
-- A compiled pattern with `fullmatch` and two ASCII digit captures is appropriate for
-  extracting `p` and `s` while allowing spaces around `(`, `,`, and `)`.
-  Validate `1 <= p <= 38` and `0 <= s <= p` with ordinary comparisons.
-  Return a canonical string for the explicit form. Keep known enum inputs
-  compatible with existing callers.
-- Reuse that one parser or its validated normalized output in the schema
-  builder; keep bare decimal on its existing `DecimalType(10,0)` path. Do not
-  trust the Python `DecimalType` constructor to enforce limits. Keep the
-  existing nondecimal mapping and error behavior unless a proven bug requires
-  a change.
-- Choose the narrowest representation compatible with the actual production
-  consumers. If retaining `TargetType | str`, account explicitly for its two
-  variants at one well-named conversion boundary. If the complete call-site
-  audit reveals that this is too invasive, propose a simpler representation
-  and explain its migration impact before applying a broad rewrite.
-- If the production column model already exposes separate `length` and
-  `scale` input fields, check their actual contract. Do not silently let them
-  disagree with `decimal(p,s)`; use one authoritative source of precision and
-  scale. Do not add such fields solely for this feature.
+Run the relevant unit tests and the repository's normal lint/format gates.
+If full Spark integration cannot run in your environment, say exactly which
+checks ran and which need the Databricks environment. Do not claim that a
+Python-side equality assertion proves Spark will accept invalid decimal
+bounds.
 
-## Acceptance checks
+## Step 6: final review and response
 
-- Config: bare enum and bare string still yield `TargetType.DECIMAL` and the
-  original default; explicit decimal is validated and canonicalized.
-- Config: `decimal(10,4)`, `DECIMAL(10, 4)`, and `decimal ( 10 , 4 )` have
-  identical meaning. Invalid grammar or bounds fail before Spark execution.
-- Schema: build from actual validated config and confirm `DecimalType(10,4)`,
-  `DecimalType(10,0)`, and at least one existing nondecimal type. Verify the
-  entity transformation path if it reads the field.
-- Run the relevant production tests and the project's normal lint checks.
-  In the final review, distinguish verified behavior from assumptions about
-  code that was not shown in the screenshots.
-
-Do not sign off until the `_DECIMAL_RE` declaration and `TargetType` definition
-have been inspected and the real-model regression test has passed.
-
-Report the exact files changed, what was preserved, which findings were
-confirmed or disproved (especially `TargetType.__str__`), and test results.
+Read the final diff top-to-bottom. Explain the `TargetType` declaration you
+found, the precise `_DECIMAL_RE` pattern you kept or changed, every consumer
+of `target_column_data_type` that required adjustment, and how bare decimal
+and nondecimal behavior were preserved. List the executed checks and results.
+State any remaining limitation explicitly. Do not stop at a plan or add
+unrequested abstractions. The result should be a small production patch that
+passes the concrete tests above.
