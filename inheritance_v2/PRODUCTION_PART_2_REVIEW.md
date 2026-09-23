@@ -1,7 +1,8 @@
 # Retention inheritance: review findings and production Part 2 plan
 
-Reviewed 2026-09-23 against this repository's `main` at `81b04e8`, the
-`inheritance_v2/` design POC, and current Azure Databricks documentation.
+Reviewed 2026-09-23 against this repository's isolated `inheritance_v2/` POC,
+the current packaged baseline, and Azure Databricks documentation. The POC
+was originally introduced at `81b04e8`.
 This is a handover to the agent working on the **separate production PR**. We
 cannot inspect that PR or the Databricks workspace from this checkout. Treat
 every description of production state below as a task to verify there, not an
@@ -19,8 +20,8 @@ The repo's `src/ttl_config/retention_config_generator.py` defaults
 when set to `True`, calls `generate_ttl_config(...)`, and writes through
 `write_ttl_config(...)`. `inheritance_v2/` is not imported by the generator or
 included in the package under `src/`. This checkout does **not** implement the
-environment-resolution change described in
-`docs/agent-prompts/add-environment-catalog-resolution.md`; the production
+environment-resolution change described in the historical
+`archive/agent-prompts/add-environment-catalog-resolution.md`; the production
 agent must use its real branch as the source of truth. In that branch, physical
 environment catalogs must be resolved **before** lineage traversal.
 
@@ -139,9 +140,28 @@ column inheritance in the example, and named the destination
 named that destination. The generator actually exposes `generate_ttl_config`
 and `write_ttl_config`; `_RETENTION_TABLE` is `ttl_config`.
 
-**Resolution in this commit:** Corrected those two documents and made the
-default-disabled, isolated-POC status explicit. The production agent should
-update **its** documentation against **its** generator, not copy this example.
+**Resolution:** Corrected those two documents in the previous docs commit and
+made the default-disabled, isolated-POC status explicit. The production agent
+should update **its** documentation against **its** generator, not copy this
+example.
+
+### R7 — Keep destination partition validation; do not apply it to targets
+
+**Evidence:** `RetentionConfigGenerator.write_ttl_config()` writes a complete
+rules snapshot to a managed Delta config table and checks an existing
+destination's format and `partitionColumns`. A partitioned Delta table can
+retain untouched partitions under
+[dynamic partition overwrite](https://learn.microsoft.com/en-us/azure/databricks/delta/selective-overwrite),
+including DataFrame overwrite writes, while the writer does not explicitly
+pin an overwrite mode. Omitted policies must not survive a snapshot rewrite.
+The `RetentionTargetValidator` checks managed Delta/Iceberg or Delta streaming
+targets and top-level time columns; it does **not** restrict target partitions.
+
+**Part 1 / Part 2 action:** Keep the existing unpartitioned check on the
+**configuration destination**. Do not add partition validation to physical
+retention targets. If the production writer uses a demonstrably different
+full-snapshot operation, reassess the guard against that real writer rather
+than deleting it as a generic cleanup.
 
 ### Code-quality review: keep the POC's shallow method hierarchy
 
@@ -247,6 +267,9 @@ for Part 2 review; this checkout has no live workspace evidence.
    skills. Inspect current resolver, Excel reader, domain models, environment
    catalog resolution, generator, target validator, tests, job parameters,
    write contract, and documentation. List exact divergences from this POC.
+   The deleted `ttl_config_v2/` duplicate survives only in Git history;
+   historical prompts live under `archive/agent-prompts/`. Use the active
+   handover and production branch, not those old files, as instructions.
 3. **Prove the gates.** Capture both VIEW bridge edges in the latest successful
    relevant update under production permissions. Confirm same-name **semantic**
    invariant, supported table/view types, update coverage, normal refresh
@@ -306,3 +329,4 @@ are examples, not overrides of the production branch.
 - [Azure Databricks pipeline updates](https://learn.microsoft.com/en-us/azure/databricks/ldp/updates): selected-table and failed-table refresh behavior.
 - [Azure Databricks lineage limitations](https://learn.microsoft.com/en-us/azure/databricks/data-governance/unity-catalog/data-lineage): lineage visibility and PRIVATE-table limitations.
 - [Azure Databricks current_metastore()](https://learn.microsoft.com/en-us/azure/databricks/sql/language-manual/functions/current_metastore): `<cloud>:<region>:<uuid>` return format.
+- [Azure Databricks selective Delta overwrite](https://learn.microsoft.com/en-us/azure/databricks/delta/selective-overwrite): dynamic partition overwrite can leave untouched partitions in an existing table.

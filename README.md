@@ -1,68 +1,54 @@
 # ttl_config
 
-Production-oriented retention configuration for Unity Catalog tables.
+Retention configuration for Unity Catalog tables. The current package creates
+rules from Excel, validates physical targets, and writes an authoritative
+Delta configuration snapshot. The production PR currently uses **explicit
+rules only**.
 
-This repository contains the first consolidated version of the retention configuration prototype previously spread across Wine-Quality and logger.
+## Start here
 
-## Scope
+| Path | Status | Use |
+| --- | --- | --- |
+| [`src/ttl_config/`](src/ttl_config/) | Current packaged baseline | Source for the explicit-rules Part 1 PR. The generator invokes its legacy column-lineage resolver when `include_inheritance=True`; that resolver is **not suitable** for the streaming workload. Keep inheritance disabled. |
+| [`inheritance_v2/`](inheritance_v2/) | Isolated design POC | Table-lineage resolver and synthetic tests for Part 2. The generator does not import it, and the wheel does not package it. |
+| [`inheritance_v2/PRODUCTION_PART_2_REVIEW.md`](inheritance_v2/PRODUCTION_PART_2_REVIEW.md) | Active agent handover | Findings, Databricks pre-flight SQL, and the Part 1 → Part 2 sequence. **Read this first** for the production PR. |
+| [`inheritance_v2/PORT_TO_PRODUCTION.md`](inheritance_v2/PORT_TO_PRODUCTION.md) | Active implementation prompt | The focused Part 2 implementation and test contract. |
+| [`archive/agent-prompts/`](archive/agent-prompts/) | Historical context | Previous investigations and task prompts; they are not instructions to execute against the current branch. |
 
-The library:
+The duplicate `ttl_config_v2/` prototype has been removed from the working
+tree. It remains available in Git history. The repository's
+[`engineering skills`](skills/) govern any production adaptation.
 
-1. reads explicit retention rules from a product-owned Excel worksheet,
-2. optionally inherits rules through the legacy Lakeflow column-lineage resolver,
-3. validates target tables and time columns against Unity Catalog,
-4. writes an authoritative Delta snapshot of the effective configuration.
+## Explicit-rule path
 
-Explicit rules remain authoritative. Inheritance defaults to disabled. The
-legacy resolver is still callable when explicitly enabled, but its column-lineage
-assumption does not hold for the target streaming workload. Keep inheritance
-disabled in production until the table-lineage design in `inheritance_v2/` is
-verified and ported. See [the Part 2 review and plan](inheritance_v2/PRODUCTION_PART_2_REVIEW.md).
+```python
+from ttl_config.retention_config_generator import RetentionConfigGenerator
 
-## Repository layout
+generator = RetentionConfigGenerator(spark)
+rules = generator.generate_ttl_config(
+    workbook_path="/Volumes/ops/config/retention.xlsx",
+    sheet_name="retention_rules",
+    include_inheritance=False,
+)
+generator.write_ttl_config(rules)
+```
 
-    src/ttl_config/
-      retention_rules.py
-      excel_retention_rules.py
-      retention_rule_inheritance.py
-      retention_target_validator.py
-      retention_config_generator.py
-    skills/
-      repo-principal-review/SKILL.md
-      ai-engineering-anti-overengineering/SKILL.md
-    docs/
-      retention-design.md
-    tests/
-      test_retention_rules.py
+The configuration destination is `<ops_catalog>.retention.ttl_config`. The
+generator checks an existing destination before replacing the entire rules
+snapshot. See [the current design](docs/retention-design.md) for ownership and
+validation boundaries. **Retention target tables may be partitioned**; the
+unpartitioned check applies only to the configuration destination.
 
-## Example
+## Local verification
 
-    from ttl_config.retention_config_generator import RetentionConfigGenerator
+Install with the `databricks` and `dev` extras, then run:
 
-    generator = RetentionConfigGenerator(spark)
+```bash
+python -m pytest tests inheritance_v2/tests -q
+ruff check inheritance_v2
+ruff format --check inheritance_v2
+```
 
-    rules = generator.generate_ttl_config(
-        workbook_path="/Volumes/ops/config/retention.xlsx",
-        sheet_name="retention_rules",
-    )
-
-    generator.write_ttl_config(rules)
-
-The generated destination is read from the Spark configuration key ops_catalog and is written to:
-
-    <ops_catalog>.retention.ttl_config
-
-## Deliberate boundaries
-
-- The Excel reader owns workbook shape, parsing, row limits, and duplicate explicit targets.
-- Pydantic models own local rule and Unity Catalog identifier invariants.
-- The target validator owns Unity Catalog compatibility.
-- The inheritance resolver owns lineage-based enrichment only.
-- The generator owns orchestration and the authoritative output snapshot.
-- The implementation relies on the Lakeflow/SDP DAG and current successful-update contracts; it does not reconstruct historical ownership or failed-update state.
-
-## Development
-
-    python -m pytest
-
-The Spark-dependent components are intended to run in Databricks or an environment with the matching PySpark and Databricks runtime dependencies.
+The inheritance tests use synthetic Spark DataFrames. They do not prove that
+the required VIEW edges occur in the real Databricks workspace. Part 2 must
+pass the live pre-flight before any production inheritance is enabled.

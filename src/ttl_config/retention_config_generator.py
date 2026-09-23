@@ -168,6 +168,8 @@ class RetentionConfigGenerator:
             f"DESCRIBE DETAIL {identifier}"
         ).first()
 
+        # A partitioned destination can retain omitted rules under dynamic
+        # partition overwrite; this table is always a complete snapshot.
         if detail["format"].lower() != "delta" or detail["partitionColumns"]:
             raise ValueError(
                 f"Retention configuration destination {identifier} must be an "

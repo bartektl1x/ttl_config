@@ -28,10 +28,10 @@ own engineering skills, conventions, and interfaces before using this POC.
    `inheritance_v2/tests/`, and `inheritance_v2/README.md`. They demonstrate
    the chosen algorithm and its synthetic verification. They are not evidence
    that live VIEW lineage works in your workspace.
-4. Use `docs/agent-prompts/redesign-retention-inheritance-table-lineage.md`
-   and this handover for business intent. Resolve differences against the real
-   production code and actual Databricks observations. Do not overwrite
-   production improvements by copying this file wholesale.
+4. Use this handover for business intent. The earlier redesign instructions
+   have moved to `archive/agent-prompts/` for historical context only. Resolve
+   differences against the real production code and Databricks observations;
+   do not overwrite production improvements by copying this file wholesale.
 5. Check the production generator's default and every invocation. An old
    column-lineage resolver must not be reachable in production while Part 1
    deliberately disables inheritance. Part 2 should replace that resolver
@@ -112,6 +112,10 @@ and reachable Spark collections have one `max_mappings` safety budget.
   existing `RetentionTargetValidator` owns table existence/type and physical
   time-column checks; the generator owns orchestration and output. Ensure
   validation still happens **after** optional inheritance.
+- Keep the current generator's unpartitioned managed Delta requirement for the
+  **configuration destination**, unless the real production writer has a
+  proven full-snapshot contract for partitioned destinations. Do not apply
+  that check to physical retention targets. See review finding R7.
 - An inherited rule for a downstream table missing that same time-column
   name must fail in `RetentionTargetValidator`. Do not add a schema lookup or
   downstream-column guessing to the resolver.

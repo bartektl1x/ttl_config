@@ -58,4 +58,9 @@ The generator writes a complete, unpartitioned managed Delta snapshot to:
 
     <ops_catalog>.retention.ttl_config
 
-When the destination already exists, its type, format, partitioning, and exact schema are validated before overwrite. The generated snapshot is authoritative: omitted rules are removed from the configuration table.
+When the destination already exists, its type, format, partitioning, and exact
+schema are validated before overwrite. The generated snapshot is authoritative:
+omitted rules are removed from the configuration table. Requiring the **config
+destination** to be unpartitioned keeps partition-specific overwrite behavior
+from retaining stale configuration rows. It does not restrict partitioning of
+the managed or streaming tables targeted by retention rules.
