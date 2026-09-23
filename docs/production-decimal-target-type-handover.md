@@ -3,7 +3,9 @@
 ## Task and scope
 
 Review and repair the proposed production diff for `target_column_data_type`.
-The source diff was supplied as eight screenshots, covering these paths:
+The source diff was supplied in two screenshot sets. The second set adds regex
+validation, bounds checks, canonicalization, and more tests; it supersedes
+some of the findings from the first set. The screenshots cover these paths:
 
 - `src/shared_lib/layers/shared/config.py`
 - `src/shared_lib/layers/silver/data_vault_entity.py`
@@ -52,55 +54,50 @@ Spark 3.5 Python source (its `DecimalType` constructor merely assigns `precision
 and `scale`; it does not validate the bounds):
 https://spark.apache.org/docs/3.5.6/api/python/_modules/pyspark/sql/types.html
 
-## Findings in the screenshot diff
+## Current review of the second screenshot set
 
-### 1. Potential regression of every existing enum type: verify first
+The revised `ColumnConfig` validator uses `_DECIMAL_RE.fullmatch(...)`,
+checks both numeric bounds, and returns canonical `decimal(p,s)`. This is the
+right narrow use of `re` and resolves the initial weak validation and
+formatting findings *if* `_DECIMAL_RE` itself matches exactly the intended
+grammar. Its declaration is outside the supplied screenshots: inspect the
+actual pattern, verify optional spaces and two captures, and run the new
+negative tests. Do not claim the regex is correct without seeing it.
 
-`data_vault_pipeline.py` changes `.value.lower()` to
+The revised tests now include normalized spellings and a schema test that
+asserts a nondecimal enum maps to `LongType`. This improves coverage, but the
+visible schema test still uses `_mock_column` and `MagicMock` rather than a
+real `ColumnConfig`. Its execution result is not shown. The production agent
+must still inspect `TargetType` and run a real-model regression test.
+
+### Remaining blocker: `str(TargetType)`
+
+`data_vault_pipeline.py` still changes `.value.lower()` to
 `str(column.target_column_data_type).lower()`. For ordinary `Enum` and
 `class TargetType(str, Enum)`, `str(TargetType.STRING)` is
 `"TargetType.STRING"`, not `"string"`; the mapping then rejects existing
 columns. This concern does not apply if `TargetType` is genuinely `StrEnum` or
-overrides `__str__` appropriately. Inspect its declaration and prove the
-behavior with a real `ColumnConfig` -> schema-builder test. Do not rely on
-tests that pass only raw strings or `MagicMock` columns.
+overrides `__str__` appropriately. Inspect its declaration and run a
+real `ColumnConfig` -> schema-builder test. If it is an ordinary enum, use
+`.value` for enum members and the canonical string for explicit decimals.
 
-### 2. Configuration accepts invalid decimal specifications
+### Remaining audit: mixed enum/string consumers
 
-`ColumnConfig._validate_custom_type()` accepts anything with the prefix
-`decimal(` and suffix `)`. That includes malformed components and pairs
-outside Spark's limits. The schema builder later splits the text and catches
-some conversion errors, but `DecimalType(39,0)` or `DecimalType(1,2)` can be
-constructed as Python objects without raising. Such tests may pass while the
-schema fails only on the Spark/JVM side. Own grammar and numeric validation at
-the configuration boundary, once.
+The field is still `TargetType | str`. Search all reads of
+`target_column_data_type`, especially `.value`, `.name`, enum comparisons,
+casts, serialization, and mapping lookups. The screenshots update one
+`data_vault_entity.py` call site but cannot prove complete coverage. Do not
+introduce a new abstraction unless the call-site audit shows a concrete need.
 
-### 3. Mixed enum/string representation is not audited
+### Minor cleanup: schema builder parses validated text a second time
 
-The changed field is `TargetType | str`: known types become enums, while an
-explicit decimal is a string. One access was changed in
-`data_vault_entity.py`, but the screenshots cannot prove that all consumers
-were covered. Search all reads of `target_column_data_type`, especially
-`.value`, `.name`, enum comparisons, casts, serialization, and mapping lookups.
-Use one clear conversion to a canonical type name wherever consumers require
-a string. Avoid scattering ad hoc `str(enum)` conversions.
-
-### 4. Formatting survives validation and tests reward it
-
-`DECIMAL(14, 2)` becomes `decimal(14, 2)`, retaining the space. The added unit
-test asserts this exact spelling. Canonicalize the explicit form so
-`decimal(14,2)`, `DECIMAL(14, 2)`, and `decimal ( 14 , 2 )` are equal in
-configuration and any schema metadata or hashes.
-
-### 5. The tests do not close the integration gap
-
-New tests cover happy-path parser and mocked schema construction; one invalid
-case is exercised only by calling `_resolve_spark_type` directly. Add focused
-tests at the `ColumnConfig` boundary for grammar and limits, plus a test that
-constructs a *real* `ColumnConfig` and builds a schema containing a nondecimal
-enum, bare decimal, and explicit decimal. Cover the downstream entity consumer
-if it accesses the union field. Validate the resulting `StructField.dataType`,
-not just the Python constructor's return value for an invalid decimal pair.
+The schema builder still extracts precision and scale with
+`removeprefix(...).removesuffix(...).split(",")` and catches parse errors.
+After the Pydantic validator guarantees a canonical string, this should be
+evaluated against the builder's actual public contract. Either reuse the one
+small parser, or consume its canonical output directly. Avoid independently
+maintaining a second, broader decimal grammar or revalidating constraints
+already guaranteed by `ColumnConfig`.
 
 ## Implementation direction
 
@@ -109,7 +106,7 @@ not just the Python constructor's return value for an invalid decimal pair.
   field validator is reasonable; do not replace it solely for stylistic
   reasons. Use a small pure decimal parser called from that validator, not a
   generic Spark SQL type parser or a new hierarchy of type classes.
-- An anchored `re.fullmatch` with two ASCII digit captures is appropriate for
+- A compiled pattern with `fullmatch` and two ASCII digit captures is appropriate for
   extracting `p` and `s` while allowing spaces around `(`, `,`, and `)`.
   Validate `1 <= p <= 38` and `0 <= s <= p` with ordinary comparisons.
   Return a canonical string for the explicit form. Keep known enum inputs
@@ -141,6 +138,9 @@ not just the Python constructor's return value for an invalid decimal pair.
 - Run the relevant production tests and the project's normal lint checks.
   In the final review, distinguish verified behavior from assumptions about
   code that was not shown in the screenshots.
+
+Do not sign off until the `_DECIMAL_RE` declaration and `TargetType` definition
+have been inspected and the real-model regression test has passed.
 
 Report the exact files changed, what was preserved, which findings were
 confirmed or disproved (especially `TargetType.__str__`), and test results.
